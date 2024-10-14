@@ -16,9 +16,9 @@
  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
  */
-%module stripLocation
+%module cppModuleTemplate
 %{
-    #include "stripLocation.h"
+   #include "cppModuleTemplate.h"
 %}
 
 %pythoncode %{
@@ -26,24 +26,14 @@ from Basilisk.architecture.swig_common_model import *
 %}
 %include "std_string.i"
 %include "swig_conly_data.i"
-%include "swig_eigen.i"
 
 %include "sys_model.i"
-%include "stripLocation.h"
-%include "std_vector.i"
+%include "cppModuleTemplate.h"
 
-
-%include "architecture/msgPayloadDefC/SpicePlanetStateMsgPayload.h"
-struct SpicePlanetStateMsg_C;
-%include "architecture/msgPayloadDefC/SCStatesMsgPayload.h"
-struct SCStatesMsg_C;
-%include "architecture/msgPayloadDefC/AccessMsgPayload.h"
-struct AccessMsg_C;
-%include "architecture/msgPayloadDefC/GroundStateMsgPayload.h"
-struct GroundStateMsg_C;
+%include "architecture/msgPayloadDefC/CModuleTemplateMsgPayload.h"
+struct CModuleTemplateMsg_C;
 
 %pythoncode %{
 import sys
 protectAllClasses(sys.modules[__name__])
 %}
-

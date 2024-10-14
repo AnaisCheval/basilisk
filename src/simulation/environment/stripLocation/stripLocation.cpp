@@ -1,7 +1,7 @@
 /*
  ISC License
 
- Copyright (c) 2024, Autonomous Vehicle Systems Lab, University of Colorado at Boulder
+ Copyright (c) 2016, Autonomous Vehicle Systems Lab, University of Colorado at Boulder
 
  Permission to use, copy, modify, and/or distribute this software for any
  purpose with or without fee is hereby granted, provided that the above
@@ -16,241 +16,93 @@
  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
  */
-
-#include "simulation/environment/stripLocation/stripLocation.h"
-#include "architecture/utilities/avsEigenSupport.h"
-#include "architecture/utilities/linearAlgebra.h"
+#include "moduleTemplates/cppModuleTemplate/cppModuleTemplate.h"
 #include <iostream>
+#include "architecture/utilities/linearAlgebra.h"
 
-/*! @brief Creates an instance of the GroundLocation class with a minimum elevation of 10 degrees,
- @return void
- */
-StripLocation::StripLocation()
+/*! This is the constructor for the module class.  It sets default variable
+    values and initializes the various parts of the model */
+CppModuleTemplate::CppModuleTemplate()
 {
-    //! - Set some default initial conditions:
-
-    this->minimumElevation = 10.*D2R; // [rad] Minimum elevation above each point of the central line of the strip; defaults to 10 degrees
-    this->maximumRange = -1; // [m] Maximum range for the groundLocation to compute access; defaults no maximum range
-
-    this->currentGroundStateBuffer = this->currentGroundStateOutMsg.zeroMsgPayload; // Initialize the currentGroundStateBuffer (NavTransMsgPayload structure)
-
-    this->planetRadius = REQ_EARTH*1e3; // [m] Earth's equatorial radius
-    this->planetState = this->planetInMsg.zeroMsgPayload; // Initialize the planetState
-    this->planetState.J20002Pfix[0][0] = 1;
-    this->planetState.J20002Pfix[1][1] = 1;
-    this->planetState.J20002Pfix[2][2] = 1;
-    this->r_North_N << 0, 0, 1; // Set the vector r_North_N to point along the z-axis
-
-    this->r_LP_P_Start.fill(0.0); // [m] Ground location of the first point to image on the central line of the strip relative to PCPF
-    this->p_start = this->r_LP_P_Start.normalized() * this->planetRadius; //[m] Making sure the location of the first point is on the Earth surface for the interpolation
-
-    this->r_LP_P_End.fill(0.0); // [m] Ground location of the last point to image on the central line of the strip relative to PCPF
-    this->p_end = this->r_LP_P_End.normalized() * this->planetRadius; //[m] Making sure the location of the last point is on the Earth surface for the interpolation
-
-    this->theta = std::acos(p_start.dot(p_end) / (this->planetRadius * this->planetRadius));  // [rad] Angle between p_start and p_end
-
-    this->lenght_central_line=this->theta* this->planetRadius; // [m] Lenght of the central line 
-
-    this->r_LP_P = this->r_LP_P_Start; // [m] Ground location of the current target point on the central line of the strip relative to PCPF
-
-    this->duration_strip_imaging = 0;  // Time already spent to image the strip
-    this->OldSimNanos = 0; // Previous CurrentSimNanos
-
-    this->acquisition_speed = 3*1e3; // [m/s] Constant acquisition speed of the camera; defaults 3 km/s
-    
 }
 
-/*! Empty destructor method.
- @return void
- */
-StripLocation::~StripLocation()
+/*! Module Destructor.  */
+CppModuleTemplate::~CppModuleTemplate()
 {
-    for (long unsigned int c=0; c<this->accessOutMsgs.size(); c++) {
-        delete this->accessOutMsgs.at(c);
-    }
     return;
 }
 
-/*! Resets the internal position to the specified initial position.*/
-void StripLocation::Reset(uint64_t CurrentSimNanos)
-{
-    this->r_LP_P = this->r_LP_P_Start;
-    
-    if (this->planetRadius < 0) {
-        bskLogger.bskLog(BSK_ERROR, "GroundLocation module must have planetRadius set.");
-    }
-}
 
-/*! Adds a scState message name to the vector of names to be subscribed to. Also creates a corresponding access message output name.
-*/
-void StripLocation::addSpacecraftToModel(Message<SCStatesMsgPayload> *tmpScMsg)
-{
-    this->scStateInMsgs.push_back(tmpScMsg->addSubscriber());
-
-    /* create output message */
-    Message<AccessMsgPayload> *msg;
-    msg = new Message<AccessMsgPayload>;
-    this->accessOutMsgs.push_back(msg);
-
-    /* expand the buffer vector */
-    AccessMsgPayload accMsg;
-    this->accessMsgBuffer.push_back(accMsg);
-}
-
-/*! Read module messages
-*/
-bool StripLocation::ReadMessages()
-{
-    SCStatesMsgPayload scMsg;
-
-    /* clear out the vector of spacecraft states.  This is created freshly below. */
-    this->scStatesBuffer.clear();
-
-    //! - read in the spacecraft state messages
-    bool scRead;
-    if(!this->scStateInMsgs.empty())
-    {
-        scRead = true;
-        for (long unsigned int c = 0; c < this->scStateInMsgs.size(); c++) {
-            scMsg = this->scStateInMsgs.at(c)();
-            scRead = scRead && this->scStateInMsgs.at(c).isWritten();
-            this->scStatesBuffer.push_back(scMsg);
-        }
-    } else {
-        bskLogger.bskLog(BSK_ERROR, "Ground location has no spacecraft to track.");
-        scRead = false;
-    }
-    //! - Read in the optional planet message.  if no planet message is set, then a zero planet position, velocity and orientation is assumed
-    bool planetRead = true;
-    if(this->planetInMsg.isLinked())
-    {
-        planetRead = this->planetInMsg.isWritten();
-        this->planetState = this->planetInMsg();
-    }
-
-    return(planetRead && scRead);
-}
-
-/*! write module messages
-*/
-void StripLocation::WriteMessages(uint64_t CurrentClock)
-{
-    //! - write access message for each spacecraft
-    for (long unsigned int c=0; c< this->accessMsgBuffer.size(); c++) {
-        this->accessOutMsgs.at(c)->write(&this->accessMsgBuffer.at(c), this->moduleID, CurrentClock);
-    }
-    this->currentGroundStateOutMsg.write(&this->currentGroundStateBuffer, this->moduleID, CurrentClock);
-}
-
-/*! Inertial position and velocity of the target point on the strip 
-*/
-void StripLocation::updateInertialPosition()
-{
-    // First, get the rotation matrix from the inertial to planet frame from SPICE:
-    this->dcm_PN = cArray2EigenMatrix3d(*this->planetState.J20002Pfix);
-    this->dcm_PN_dot = cArray2EigenMatrix3d(*this->planetState.J20002Pfix_dot);
-    this->r_PN_N = cArray2EigenVector3d(this->planetState.PositionVector);
-
-    // Position of the target in the inertial frame 
-    this->r_LP_N = this->dcm_PN.transpose() * this->r_LP_P;
-    this->rhat_LP_N = this->r_LP_N/this->r_LP_N.norm();
-    this->r_LN_N = this->r_PN_N + this->r_LP_N;
-
-    // Get planet frame angular velocity vector
-    Eigen::Matrix3d w_tilde_PN = - this->dcm_PN_dot * this->dcm_PN.transpose();
-    this->w_PN << w_tilde_PN(2,1), w_tilde_PN(0,2), w_tilde_PN(1,0);
-
-    //  Stash updated position in the groundState message
-    eigenVector3d2CArray(this->r_LN_N, this->currentGroundStateBuffer.r_LN_N);
-    eigenVector3d2CArray(this->r_LP_N, this->currentGroundStateBuffer.r_LP_N);
-}
-
-/*! Interpolate the trajectory points on the earth surface to define the continuous central line of the strip. It is assumed that the Earth is spherical */
-Eigen::Vector3d StripLocation::PositionCentralLine(double t) {
-
-        // If points are too close (theta ~ 0), return p_start to avoid division by zero
-        if (std::abs(this->theta) < 1e-6) {
-            return p_start;
-        }
-
-        // Perform spherical linear interpolation 
-        double sinTheta = std::sin(this->theta);
-        double coeff1 = std::sin((1 - t) * this->theta) / sinTheta;
-        double coeff2 = std::sin(t * this->theta) / sinTheta;
-
-        Eigen::Vector3d interpolatedPoint = coeff1 * this->p_start + coeff2 * this->p_end;
-        
-        // Return the interpolated point on the Earth's surface
-        return interpolatedPoint.normalized() * this->planetRadius;
-    }
-
-
-/*! Update the target point on the central line */
-void StripLocation::updateTargetPositionPCPF(uint64_t CurrentClock)
-    {
-        // Time already spent to image the strip
-        this->lenght_central_line=this->theta* this->planetRadius;
-        this->duration_strip_imaging = this->duration_strip_imaging + (CurrentClock-this->OldSimNanos)
-
-        //Update of the position vector of the target point on the central line 
-        this->r_LP_P = this->StripLocation::PositionCentralLine(this->duration_strip_imaging/(this->lenght_central_line/this->acquisition_speed))
-
-        }
-
-void StripLocation::computeAccess()
-{
-    // Update the groundLocation's inertial position
-    this->updateInertialPosition();
-
-    // Iterate over spacecraft position messages and compute the access for each one
-    std::vector<AccessMsgPayload>::iterator accessMsgIt;
-    std::vector<SCStatesMsgPayload>::iterator scStatesMsgIt;
-    for(scStatesMsgIt = this->scStatesBuffer.begin(), accessMsgIt = accessMsgBuffer.begin(); scStatesMsgIt != scStatesBuffer.end(); scStatesMsgIt++, accessMsgIt++){
-        //! Compute the relative position of each spacecraft to the site in the planet-centered inertial frame
-        Eigen::Vector3d r_BP_N = cArray2EigenVector3d(scStatesMsgIt->r_BN_N) - this->r_PN_N;
-        Eigen::Vector3d r_BL_N = r_BP_N - this->r_LP_N;
-        auto r_BL_mag = r_BL_N.norm();
-        Eigen::Vector3d relativeHeading_N = r_BL_N / r_BL_mag;
-
-        double viewAngle = (M_PI_2-safeAcos(this->rhat_LP_N.dot(relativeHeading_N)));
-
-        accessMsgIt->slantRange = r_BL_mag;
-        accessMsgIt->elevation = viewAngle;
-        Eigen::Vector3d r_BL_L = this->dcm_LP * this->dcm_PN * r_BL_N;
-        eigenVector3d2CArray(r_BL_L, accessMsgIt->r_BL_L);
-        double cos_az = -r_BL_L[0]/(sqrt(pow(r_BL_L[0],2) + pow(r_BL_L[1],2)));
-        double sin_az = r_BL_L[1]/(sqrt(pow(r_BL_L[0],2) + pow(r_BL_L[1],2)));
-        accessMsgIt->azimuth = atan2(sin_az, cos_az);
-        
-        Eigen::Vector3d v_BL_L = this->dcm_LP * this->dcm_PN * (cArray2EigenVector3d(scStatesMsgIt->v_BN_N) - this->w_PN.cross(r_BP_N)); // V observed from gL wrt P frame, expressed in L frame coords (SEZ)
-        eigenVector3d2CArray(v_BL_L, accessMsgIt->v_BL_L);
-        accessMsgIt->range_dot = v_BL_L.dot(r_BL_L)/r_BL_mag;
-        double xy_norm = sqrt(pow(r_BL_L[0],2)+pow(r_BL_L[1],2));
-        accessMsgIt->az_dot = (-r_BL_L[0]*v_BL_L[1] + r_BL_L[1]*v_BL_L[0])/pow(xy_norm,2);
-        accessMsgIt->el_dot = (v_BL_L[2]/xy_norm - r_BL_L[2]*(r_BL_L[0]*v_BL_L[0] + r_BL_L[1]*v_BL_L[1])/pow(xy_norm,3))/(1+pow(r_BL_L[2]/xy_norm,2));
-        
-        if( (viewAngle > this->minimumElevation) && (r_BL_mag <= this->maximumRange || this->maximumRange < 0)){
-            accessMsgIt->hasAccess = 1;
-        }
-        else
-        {
-            accessMsgIt->hasAccess = 0;
-        }
-    }
-}
-
-/*!
- update module 
- @param CurrentSimNanos
+/*! This method is used to reset the module.
+    @return void
  */
-void StripLocation::UpdateState(uint64_t CurrentSimNanos)
-{   
-    // Update the target point
-    this->ReadMessages();
-    this->updateTargetPositionPCPF(CurrentSimNanos);
-    this->computeAccess();
-    this->WriteMessages(CurrentSimNanos);
-    this->OldSimNanos = CurrentsSimNanos
+void CppModuleTemplate::Reset(uint64_t CurrentSimNanos)
+{
+    /*! - reset any required variables */
+    this->dummy = 0.0;
+    bskLogger.bskLog(BSK_INFORMATION, "Variable dummy set to %f in reset.",this->dummy);
+
+    /* zero output message on reset */
+    CModuleTemplateMsgPayload outMsgBuffer={};       /*!< local output message copy */
+    this->dataOutMsg.write(&outMsgBuffer, this->moduleID, CurrentSimNanos);
+}
+
+
+/*! This is the main method that gets called every time the module is updated.  Provide an appropriate description.
+    @return void
+ */
+void CppModuleTemplate::UpdateState(uint64_t CurrentSimNanos)
+{
+    double Lr[3];                                   /*!< [unit] variable description */
+    CModuleTemplateMsgPayload outMsgBuffer;       /*!< local output message copy */
+    CModuleTemplateMsgPayload inMsgBuffer;        /*!< local copy of input message */
+    double  inputVector[3];
+
+    // always zero the output buffer first
+    outMsgBuffer = this->dataOutMsg.zeroMsgPayload;
+    v3SetZero(inputVector);
+
+    /*! - Read the optional input messages */
+    if (this->dataInMsg.isLinked()) {
+        inMsgBuffer = this->dataInMsg();
+        v3Copy(inMsgBuffer.dataVector, inputVector);
+    }
+
+    /*! - Add the module specific code */
+    v3Copy(inputVector, Lr);
+    this->dummy += 1.0;
+    Lr[0] += this->dummy;
+
+    /*! - store the output message */
+    v3Copy(Lr, outMsgBuffer.dataVector);
+
+    /*! - write the module output message */
+    this->dataOutMsg.write(&outMsgBuffer, this->moduleID, CurrentSimNanos);
+
+    /* this logging statement is not typically required.  It is done here to see in the
+     quick-start guide which module is being executed */
+    bskLogger.bskLog(BSK_INFORMATION, "C++ Module ID %lld ran Update at %fs", this->moduleID, (double) CurrentSimNanos/(1e9));
 
 }
 
+void CppModuleTemplate::setDummy(double value)
+{
+    // check that value is in acceptable range
+    if (value > 0) {
+        this->dummy = value;
+    } else {
+        bskLogger.bskLog(BSK_ERROR, "CppModuleTemplate: dummy variable must be strictly positive, you tried to set %f", value);
+    }
+}
+
+void CppModuleTemplate::setDumVector(std::array<double, 3> value)
+{
+    // check that value is in acceptable range
+    for (int i = 0; i < 3; i++) {
+        if (value[i] <= 0.0) {
+            bskLogger.bskLog(BSK_ERROR, "CppModuleTemplate: dumVariable variables must be strictly positive");
+            return;
+        }
+    }
+    this->dumVector = value;
+}
