@@ -17,45 +17,86 @@
 
  */
 
-#ifndef CPP_MODULE_TEMPLATE_H
-#define CPP_MODULE_TEMPLATE_H
+#ifndef STRIP_LOCATION_H
+#define STRIP_LOCATION_H
 
+#include <Eigen/Dense>
+#include <vector>
+#include <string>
 #include "architecture/_GeneralModuleFiles/sys_model.h"
-#include "architecture/msgPayloadDefC/CModuleTemplateMsgPayload.h"
-#include "architecture/utilities/bskLogging.h"
+
+#include "architecture/msgPayloadDefC/SpicePlanetStateMsgPayload.h"
+#include "architecture/msgPayloadDefC/SCStatesMsgPayload.h"
+#include "architecture/msgPayloadDefC/AccessMsgPayload.h"
+#include "architecture/msgPayloadDefC/GroundStateMsgPayload.h"
 #include "architecture/messaging/messaging.h"
 
-#include <array>
+#include "architecture/utilities/geodeticConversion.h"
+#include "architecture/utilities/astroConstants.h"
+#include "architecture/utilities/bskLogging.h"
 
-/*! @brief basic Basilisk C++ module class */
-class CppModuleTemplate: public SysModel {
+/*! @brief strip location class */
+class StripLocation: public SysModel {
 public:
-    CppModuleTemplate();
-    ~CppModuleTemplate();
-
-    void Reset(uint64_t CurrentSimNanos);
+    StripLocation();
+    ~StripLocation();
     void UpdateState(uint64_t CurrentSimNanos);
+    void Reset(uint64_t CurrentSimNanos);
+    bool ReadMessages();
+    void WriteMessages(uint64_t CurrentClock);
+    void addSpacecraftToModel(Message<SCStatesMsgPayload> *tmpScMsg);
 
-    Message<CModuleTemplateMsgPayload> dataOutMsg;     //!< attitude navigation output msg
-    ReadFunctor<CModuleTemplateMsgPayload> dataInMsg;  //!< translation navigation output msg
-
-    BSKLogger bskLogger;                               //!< BSK Logging
-
-    /** setter for `dummy` property */
-    void setDummy(double value);
-    /** getter for `dummy` property */
-    double getDummy() const {return this->dummy;}
-    /** setter for `dumVector` property */
-    void setDumVector(std::array<double, 3> value);
-    /** getter for `dumVector` property */
-    std::array<double, 3> getDumVector() const {return this->dumVector;}
 
 private:
+    void updateInertialPosition();
+    void updateTargetPositionPCPF(uint64_t CurrentClock)
+    void computeAccess();
+    Eigen::Vector3d StripLocation::PositionCentralLine(double t)
 
-    double dummy = {};                                 //!< [units] sample module variable declaration
-    std::array<double, 3> dumVector = {};              //!< [units] sample vector variable
 
+public:
+    double minimumElevation; //!< [rad] minimum elevation above the local horizon needed to see a spacecraft; defaults to 10 degrees equivalent.
+    double maximumRange; //!< [m] (optional) Maximum slant range to compute access for; defaults to -1, which represents no maximum range.
+    double planetRadius; //!< [m] Planet radius in meters.
+    Eigen::Vector3d r_LP_P_Start; //!< [m] Ground location of the first point to image on the central line of the strip relative to PCPF
+    Eigen::Vector3d r_LP_P_End; //!< [m] Ground location of the last point to image on the central line of the strip relative to PCPF
+    double acquisition_speed; //!< [m/s] Constant acquisition speed of the camera
+    ReadFunctor<SpicePlanetStateMsgPayload> planetInMsg;            //!< planet state input message
+    Message<GroundStateMsgPayload> currentGroundStateOutMsg;    //!< ground location output message
+    std::vector<Message<AccessMsgPayload>*> accessOutMsgs;           //!< vector of ground location access messages
+    std::vector<ReadFunctor<SCStatesMsgPayload>> scStateInMsgs; //!< vector of sc state input messages
+    BSKLogger bskLogger;         //!< -- BSK Logging
+
+
+private:
+    GroundStateMsgPayload currentGroundStateBuffer;  //!< buffer of ground station output data
+    SpicePlanetStateMsgPayload planetState; //!< buffer of planet data
+    Eigen::Vector3d r_North_N; //!<[-] Inertial 3rd axis, defined internally as "North".
+    Eigen::Vector3d r_LP_P; //!< [m] Ground location of the current target point on the central line of the strip relative to PCPF
+    Eigen::Vector3d p_start; //!< [m] Making sure the location of the first point is on the Earth surface for the interpolation
+    Eigen::Vector3d p_end;//[m] Making sure the location of the last point is on the Earth surface for the interpolation
+    double duration_strip_imaging; //!< [s] Time already spent to image the strip
+    double OldSimNanos //!< [s] Previous CurrentSimNanos
+    double theta ;//!< [rad] Angle between r_LP_P_Start and r_LP_P_End from the center of Earth (The Earth is assumed perfectly spherical.)
+    double lenght_central_line //!< [m] Lenght of the central line
+
+    std::vector<AccessMsgPayload> accessMsgBuffer;                  //!< buffer of access output data
+    std::vector<SCStatesMsgPayload> scStatesBuffer;             //!< buffer of spacecraft states
+    Eigen::Matrix3d dcm_LP; //!< Rotation matrix from planet-centered, planet-fixed frame P to site-local topographic (SEZ) frame L coordinates.
+    Eigen::Matrix3d dcm_PN; //!< Rotation matrix from inertial frame N to planet-centered to planet-fixed frame P.
+    Eigen::Matrix3d dcm_PN_dot; //!< Rotation matrix derivative from inertial frame N to planet-centered to planet-fixed frame P.
+    Eigen::Vector3d w_PN; //!< [rad/s] Angular velocity of planet-fixed frame P relative to inertial frame N.
+    Eigen::Vector3d r_PN_N; //!< [m] Planet position vector relative to inertial frame origin.
+    Eigen::Vector3d r_LP_N; //!< [m] Gound Location position vector relative to planet origin vector in inertial coordinates.
+    Eigen::Vector3d rhat_LP_N;//!< [-] Surface normal vector from the target location in inertial coordinates.
+    Eigen::Vector3d r_LN_N; //!< [m] Ground Location position vector relative to inertial frame origin in inertial coordinates.
+    Eigen::Vector3d r_North_N; //!<[-] Inertial 3rd axis, defined internally as "North".
 };
+#endif /* StripLocation */
 
 
-#endif
+
+
+
+
+
