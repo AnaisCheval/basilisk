@@ -29,7 +29,7 @@ StripLocation::StripLocation()
 {
     //! - Set some default initial conditions:
 
-    this->minimumElevation = 10.*D2R; // [rad] Minimum elevation above each point of the central line of the strip; defaults to 10 degrees
+    this->minimumElevation = 10. *D2R; // [rad] Minimum elevation above each point of the central line of the strip; defaults to 10 degrees
     this->maximumRange = -1; // [m] Maximum range for the groundLocation to compute access; defaults no maximum range
 
     this->currentGroundStateBuffer = this->currentGroundStateOutMsg.zeroMsgPayload; // Initialize the currentGroundStateBuffer (NavTransMsgPayload structure)
@@ -42,22 +42,18 @@ StripLocation::StripLocation()
     this->r_North_N << 0, 0, 1; // Set the vector r_North_N to point along the z-axis
 
     this->r_LP_P_Start.fill(0.0); // [m] Ground location of the first point to image on the central line of the strip relative to PCPF
-    this->p_start = this->r_LP_P_Start.normalized() * this->planetRadius; //[m] Making sure the location of the first point is on the Earth surface for the interpolation
 
     this->r_LP_P_End.fill(0.0); // [m] Ground location of the last point to image on the central line of the strip relative to PCPF
-    this->p_end = this->r_LP_P_End.normalized() * this->planetRadius; //[m] Making sure the location of the last point is on the Earth surface for the interpolation
 
-    this->theta = std::acos(p_start.dot(p_end) / (this->planetRadius * this->planetRadius));  // [rad] Angle between p_start and p_end
 
-    this->lenght_central_line=this->theta* this->planetRadius; // [m] Lenght of the central line 
+    this->lenght_central_line=this->theta * this->planetRadius; // [m] Lenght of the central line
 
     this->r_LP_P = this->r_LP_P_Start; // [m] Ground location of the current target point on the central line of the strip relative to PCPF
 
     this->duration_strip_imaging = 0;  // Time already spent to image the strip
     this->OldSimNanos = 0; // Previous CurrentSimNanos
 
-    this->acquisition_speed = 3*1e3; // [m/s] Constant acquisition speed of the camera; defaults 3 km/s
-    
+    this->acquisition_speed = 3*1e-6; // [m/s] Constant acquisition speed of the camera; defaults 3 km/s
 }
 
 /*! Empty destructor method.
@@ -79,6 +75,35 @@ void StripLocation::Reset(uint64_t CurrentSimNanos)
     if (this->planetRadius < 0) {
         bskLogger.bskLog(BSK_ERROR, "GroundLocation module must have planetRadius set.");
     }
+}
+
+/*! Specifies the ground location from planet-centered latitude, longitude, altitude position o
+ *
+ * @param lat
+ * @param longitude
+ * @param alt
+ * @return
+ */
+void StripLocation::specifyLocationStart(double lat, double longitude, double alt)
+{
+    Eigen::Vector3d tmpLLAPosition(lat, longitude, alt);
+    this->r_LP_P_Start = LLA2PCPF(tmpLLAPosition, this->planetRadius);
+}
+
+void StripLocation::specifyLocationEnd(double lat, double longitude, double alt)
+{
+    Eigen::Vector3d tmpLLAPosition(lat, longitude, alt);
+    this->r_LP_P_End = LLA2PCPF(tmpLLAPosition, this->planetRadius);
+}
+
+void StripLocation::lenght_line()
+{
+    this->p_start = this->r_LP_P_Start.normalized() * this->planetRadius; //[m] Making sure the location of the first point is on the Earth surface for the interpolation
+    this->p_end = this->r_LP_P_End.normalized() * this->planetRadius; //[m] Making sure the location of the last point is on the Earth surface for the interpolation
+    this->theta = std::acos(p_start.dot(p_end) / (this->planetRadius * this->planetRadius));  // [rad] Angle between p_start and p_end
+    // Time already spent to image the strip
+    this->lenght_central_line=this->theta* this->planetRadius*2;
+    
 }
 
 /*! Adds a scState message name to the vector of names to be subscribed to. Also creates a corresponding access message output name.
@@ -167,12 +192,16 @@ void StripLocation::updateInertialPosition()
 
 /*! Interpolate the trajectory points on the earth surface to define the continuous central line of the strip. It is assumed that the Earth is spherical */
 Eigen::Vector3d StripLocation::PositionCentralLine(double t) {
-
+        
         // If points are too close (theta ~ 0), return p_start to avoid division by zero
         if (std::abs(this->theta) < 1e-6) {
+            this->duration_strip_imaging = 0;
             return p_start;
         }
-
+        if (t>1) {
+            return p_end;
+        }
+    
         // Perform spherical linear interpolation 
         double sinTheta = std::sin(this->theta);
         double coeff1 = std::sin((1 - t) * this->theta) / sinTheta;
@@ -188,12 +217,21 @@ Eigen::Vector3d StripLocation::PositionCentralLine(double t) {
 /*! Update the target point on the central line */
 void StripLocation::updateTargetPositionPCPF(uint64_t CurrentClock)
     {
+        this->p_start = this->r_LP_P_Start.normalized() * this->planetRadius; //[m] Making sure the location of the first point is on the Earth surface for the interpolation
+        this->p_end = this->r_LP_P_End.normalized() * this->planetRadius; //[m] Making sure the location of the last point is on the Earth surface for the interpolation
+        this->theta = std::acos(p_start.dot(p_end) / (this->planetRadius * this->planetRadius));  // [rad] Angle between p_start and p_end
         // Time already spent to image the strip
-        this->lenght_central_line=this->theta* this->planetRadius;
-        this->duration_strip_imaging = this->duration_strip_imaging + (CurrentClock-this->OldSimNanos)
+        this->lenght_central_line=this->theta* this->planetRadius*2;
+        this->duration_strip_imaging = this->duration_strip_imaging + (CurrentClock-this->OldSimNanos);
+        double imaging_time = static_cast<double>(this->duration_strip_imaging);
+        double line_speed_ratio = this->lenght_central_line / this->acquisition_speed;
 
         //Update of the position vector of the target point on the central line 
-        this->r_LP_P = this->StripLocation::PositionCentralLine(this->duration_strip_imaging/(this->lenght_central_line/this->acquisition_speed))
+        this->r_LP_P = this->StripLocation::PositionCentralLine(imaging_time / line_speed_ratio);
+        /* Convert to LLA */
+        Eigen::Vector3d tmpLLAPosition = PCPF2LLA(this->r_LP_P, this->planetRadius);
+        /* Compute dcm_LP */
+        this->dcm_LP = C_PCPF2SEZ(tmpLLAPosition[0], tmpLLAPosition[1]);
 
         }
 
@@ -250,7 +288,8 @@ void StripLocation::UpdateState(uint64_t CurrentSimNanos)
     this->updateTargetPositionPCPF(CurrentSimNanos);
     this->computeAccess();
     this->WriteMessages(CurrentSimNanos);
-    this->OldSimNanos = CurrentsSimNanos
+    this->OldSimNanos = CurrentSimNanos;
 
 }
 
+ 
