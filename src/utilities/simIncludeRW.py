@@ -399,7 +399,7 @@ class rwFactory(object):
         # minimum RW torque [Nm]
         RW.u_min = 0.00001
         # static friction torque [Nm]
-        RW.fCoulomb = 0.0005
+        RW.fCoulomb = 0.05
         # RW rotor mass [kg]
         # Note: the rotor mass here is set equal to the RW mass of the above spec sheet.
         # static RW imbalance [kg*m]
@@ -450,7 +450,7 @@ class rwFactory(object):
         # minimum RW torque [Nm]
         RW.u_min = 0.00001
         # static friction torque [Nm]
-        RW.fCoulomb = 0.0005
+        RW.fCoulomb = 0
         # RW rotor mass [kg]
         # Note: the rotor mass here is set equal to the RW mass of the above spec sheet.
         # static RW imbalance [kg*m]

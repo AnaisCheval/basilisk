@@ -530,6 +530,8 @@ def run(show_plots):
     dataSigmaBR = attErrorLog.sigma_BR
     dataOmegaBR = attErrorLog.omega_BR_B
     dataOmegaRW = mrpLog.wheelSpeeds
+
+    print(dataOmegaRW)
     dataRW = []
     for i in range(numRW):
         dataRW.append(rwLogs[i].u_current)

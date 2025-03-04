@@ -36,7 +36,7 @@ from Basilisk.utilities import unitTestSupport
 
 @pytest.mark.parametrize("accuracy", [1e-12])
 @pytest.mark.parametrize("r_LS_N", [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [0, -1, 0.], [1, 1, 1]])
-@pytest.mark.parametrize("locationType", [0, 1, 2])
+@pytest.mark.parametrize("locationType", [0, 1, 2, 3])
 @pytest.mark.parametrize("use3DRate", [True, False])
 def test_locationPointing(show_plots, r_LS_N, locationType, use3DRate, accuracy):
     r"""
@@ -66,7 +66,7 @@ def test_locationPointing(show_plots, r_LS_N, locationType, use3DRate, accuracy)
     assert testResults < 1, testMessage
 
 
-def locationPointingTestFunction(show_plots, r_LS_NIn, locationType, use3DRate, accuracy):
+def locationPointingTestFunction(show_plots, r_LS_NIn,v_LP_NIn,locationType, use3DRate, accuracy):
     """Test method"""
     testFailCount = 0
     testMessages = []
@@ -81,8 +81,10 @@ def locationPointingTestFunction(show_plots, r_LS_NIn, locationType, use3DRate, 
 
     # setup
     pHat_B = np.array([1, 0, 0])
+    cHat_B= np.array([0, 1, 0])
     r_SN_N = np.array([10, 11, 12])
     r_LS_N = np.array(r_LS_NIn)
+    v_LP_N = np.array(v_LP_NIn)
     omega_BN_B = np.array([0.001, 0.002, 0.003])
     sigma_BN = np.array([0., 0., 0.])
     r_LN_N = r_LS_N + r_SN_N
@@ -92,6 +94,7 @@ def locationPointingTestFunction(show_plots, r_LS_NIn, locationType, use3DRate, 
     module.ModelTag = "locationPointingTag"
     unitTestSim.AddModelToTask(unitTaskName, module)
     module.pHat_B = pHat_B
+    module.cHat_B = cHat_B
     eps = 0.1 * macros.D2R
     module.smallAngle = eps
     if use3DRate:
@@ -121,6 +124,12 @@ def locationPointingTestFunction(show_plots, r_LS_NIn, locationType, use3DRate, 
         locationInMsgData.r_BN_N = r_LN_N
         locationInMsg = messaging.NavTransMsg().write(locationInMsgData)
         module.scTargetInMsg.subscribeTo(locationInMsg)
+    elif locationType == 3:
+        locationInMsgData = messaging.StripStateMsgPayload()
+        locationInMsgData.r_LN_N = r_LN_N
+        locationInMsgData.v_LP_N = v_LP_N
+        locationInMsg = messaging.StripStateMsg().write(locationInMsgData)
+        module.locationstripInMsg.subscribeTo(locationInMsg)
 
     # subscribe input messages to module
     module.scTransInMsg.subscribeTo(scTransInMsg)

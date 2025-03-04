@@ -28,32 +28,34 @@
 StripLocation::StripLocation()
 {
     //! - Set some default initial conditions:
-
+    
     this->minimumElevation = 10. *D2R; // [rad] Minimum elevation above each point of the central line of the strip; defaults to 10 degrees
     this->maximumRange = -1; // [m] Maximum range for the groundLocation to compute access; defaults no maximum range
-
-    this->currentGroundStateBuffer = this->currentGroundStateOutMsg.zeroMsgPayload; // Initialize the currentGroundStateBuffer (NavTransMsgPayload structure)
-
+    
+    this->currentStripStateBuffer = this->currentStripStateOutMsg.zeroMsgPayload; // Initialize the currentGroundStateBuffer (NavTransMsgPayload structure)
+    
     this->planetRadius = REQ_EARTH*1e3; // [m] Earth's equatorial radius
     this->planetState = this->planetInMsg.zeroMsgPayload; // Initialize the planetState
     this->planetState.J20002Pfix[0][0] = 1;
     this->planetState.J20002Pfix[1][1] = 1;
     this->planetState.J20002Pfix[2][2] = 1;
     this->r_North_N << 0, 0, 1; // Set the vector r_North_N to point along the z-axis
-
+    
     this->r_LP_P_Start.fill(0.0); // [m] Ground location of the first point to image on the central line of the strip relative to PCPF
-
+    
     this->r_LP_P_End.fill(0.0); // [m] Ground location of the last point to image on the central line of the strip relative to PCPF
-
-
+    
+    
     this->lenght_central_line=this->theta * this->planetRadius; // [m] Lenght of the central line
-
+    
     this->r_LP_P = this->r_LP_P_Start; // [m] Ground location of the current target point on the central line of the strip relative to PCPF
-
+    
     this->duration_strip_imaging = 0;  // Time already spent to image the strip
     this->OldSimNanos = 0; // Previous CurrentSimNanos
-
-    this->acquisition_speed = 3*1e-6; // [m/s] Constant acquisition speed of the camera; defaults 3 km/s
+    
+    this->acquisition_speed = 3*1e-6; // [m/ns] Constant acquisition speed of the camera; defaults 3 km/s
+    this->pre_imaging_time = 0; // [ns] Pre_imaging time used to artificially modify r_LP_P_Start
+    
 }
 
 /*! Empty destructor method.
@@ -87,7 +89,7 @@ void StripLocation::Reset(uint64_t CurrentSimNanos)
 void StripLocation::specifyLocationStart(double lat, double longitude, double alt)
 {
     Eigen::Vector3d tmpLLAPosition(lat, longitude, alt);
-    this->r_LP_P_Start = LLA2PCPF(tmpLLAPosition, this->planetRadius);
+    this->r_LP_P_Start = LLA2PCPF(tmpLLAPosition, this->planetRadius);  
 }
 
 void StripLocation::specifyLocationEnd(double lat, double longitude, double alt)
@@ -96,13 +98,31 @@ void StripLocation::specifyLocationEnd(double lat, double longitude, double alt)
     this->r_LP_P_End = LLA2PCPF(tmpLLAPosition, this->planetRadius);
 }
 
+void StripLocation::newpstart()
+{
+    this->p_start = this->r_LP_P_Start.normalized() * this->planetRadius; //[m] Making sure the location of the first point is on the Earth surface for the interpolation
+    this->p_end = this->r_LP_P_End.normalized() * this->planetRadius; //[m] Making sure the location of the last point is on the Earth surface for the interpolation
+    this->theta = std::acos(p_start.dot(p_end) / (this->planetRadius * this->planetRadius));  // [rad]
+    
+    this->lenght_central_line=this->theta* this->planetRadius;
+    double line_speed_ratio = this->lenght_central_line / this->acquisition_speed;
+    double imaging_time = this->pre_imaging_time*-1;
+    double t= imaging_time / line_speed_ratio;
+    double sinTheta = std::sin(this->theta);
+    double coeff1 = std::sin((1 - t) * this->theta) / sinTheta;
+    double coeff2 = std::sin(t * this->theta) / sinTheta;
+    
+    this->r_LP_P_Start = coeff1 * this->p_start + coeff2 * this->p_end;
+    
+}
+
 void StripLocation::lenght_line()
 {
     this->p_start = this->r_LP_P_Start.normalized() * this->planetRadius; //[m] Making sure the location of the first point is on the Earth surface for the interpolation
     this->p_end = this->r_LP_P_End.normalized() * this->planetRadius; //[m] Making sure the location of the last point is on the Earth surface for the interpolation
     this->theta = std::acos(p_start.dot(p_end) / (this->planetRadius * this->planetRadius));  // [rad] Angle between p_start and p_end
     // Time already spent to image the strip
-    this->lenght_central_line=this->theta* this->planetRadius*2;
+    this->lenght_central_line=this->theta* this->planetRadius;
     
 }
 
@@ -164,7 +184,7 @@ void StripLocation::WriteMessages(uint64_t CurrentClock)
     for (long unsigned int c=0; c< this->accessMsgBuffer.size(); c++) {
         this->accessOutMsgs.at(c)->write(&this->accessMsgBuffer.at(c), this->moduleID, CurrentClock);
     }
-    this->currentGroundStateOutMsg.write(&this->currentGroundStateBuffer, this->moduleID, CurrentClock);
+    this->currentStripStateOutMsg.write(&this->currentStripStateBuffer, this->moduleID, CurrentClock);
 }
 
 /*! Inertial position and velocity of the target point on the strip 
@@ -181,13 +201,19 @@ void StripLocation::updateInertialPosition()
     this->rhat_LP_N = this->r_LP_N/this->r_LP_N.norm();
     this->r_LN_N = this->r_PN_N + this->r_LP_N;
 
+    // Transform the velocity to the inertial frame 
+    this->v_LP_N = this->dcm_PN.transpose() * this->v_LP_P;
+    
     // Get planet frame angular velocity vector
     Eigen::Matrix3d w_tilde_PN = - this->dcm_PN_dot * this->dcm_PN.transpose();
     this->w_PN << w_tilde_PN(2,1), w_tilde_PN(0,2), w_tilde_PN(1,0);
 
     //  Stash updated position in the groundState message
-    eigenVector3d2CArray(this->r_LN_N, this->currentGroundStateBuffer.r_LN_N);
-    eigenVector3d2CArray(this->r_LP_N, this->currentGroundStateBuffer.r_LP_N);
+    eigenVector3d2CArray(this->r_LN_N, this->currentStripStateBuffer.r_LN_N);
+    eigenVector3d2CArray(this->r_LP_N, this->currentStripStateBuffer.r_LP_N);
+
+    //  Stash updated velocity in the groundState message
+    eigenVector3d2CArray(this->v_LP_N, this->currentStripStateBuffer.v_LP_N);
 }
 
 /*! Interpolate the trajectory points on the earth surface to define the continuous central line of the strip. It is assumed that the Earth is spherical */
@@ -198,10 +224,7 @@ Eigen::Vector3d StripLocation::PositionCentralLine(double t) {
             this->duration_strip_imaging = 0;
             return p_start;
         }
-        if (t>1) {
-            return p_end;
-        }
-    
+
         // Perform spherical linear interpolation 
         double sinTheta = std::sin(this->theta);
         double coeff1 = std::sin((1 - t) * this->theta) / sinTheta;
@@ -213,6 +236,19 @@ Eigen::Vector3d StripLocation::PositionCentralLine(double t) {
         return interpolatedPoint.normalized() * this->planetRadius;
     }
 
+Eigen::Vector3d StripLocation::VelocityCentralLine(double t) {
+    if (std::abs(this->theta) < 1e-6) {
+        return Eigen::Vector3d::Zero();
+    }
+
+    double sinTheta = std::sin(this->theta);
+    //double cosTheta = std::cos(this->theta);
+    double coeff1 = std::cos((1 - t) * this->theta) * (-this->theta) / sinTheta;
+    double coeff2 = std::cos(t * this->theta) * this->theta / sinTheta;
+
+    Eigen::Vector3d velocity = coeff1 * this->p_start + coeff2 * this->p_end;
+    return velocity;
+}
 
 /*! Update the target point on the central line */
 void StripLocation::updateTargetPositionPCPF(uint64_t CurrentClock)
@@ -221,7 +257,7 @@ void StripLocation::updateTargetPositionPCPF(uint64_t CurrentClock)
         this->p_end = this->r_LP_P_End.normalized() * this->planetRadius; //[m] Making sure the location of the last point is on the Earth surface for the interpolation
         this->theta = std::acos(p_start.dot(p_end) / (this->planetRadius * this->planetRadius));  // [rad] Angle between p_start and p_end
         // Time already spent to image the strip
-        this->lenght_central_line=this->theta* this->planetRadius*2;
+        this->lenght_central_line=this->theta* this->planetRadius;
         this->duration_strip_imaging = this->duration_strip_imaging + (CurrentClock-this->OldSimNanos);
         double imaging_time = static_cast<double>(this->duration_strip_imaging);
         double line_speed_ratio = this->lenght_central_line / this->acquisition_speed;
@@ -232,6 +268,9 @@ void StripLocation::updateTargetPositionPCPF(uint64_t CurrentClock)
         Eigen::Vector3d tmpLLAPosition = PCPF2LLA(this->r_LP_P, this->planetRadius);
         /* Compute dcm_LP */
         this->dcm_LP = C_PCPF2SEZ(tmpLLAPosition[0], tmpLLAPosition[1]);
+
+        // Calculate velocity
+        this->v_LP_P = this->StripLocation::VelocityCentralLine(imaging_time / line_speed_ratio);
 
         }
 

@@ -39,8 +39,9 @@ struct SpicePlanetStateMsg_C;
 struct SCStatesMsg_C;
 %include "architecture/msgPayloadDefC/AccessMsgPayload.h"
 struct AccessMsg_C;
-%include "architecture/msgPayloadDefC/GroundStateMsgPayload.h"
-struct GroundStateMsg_C;
+%include "architecture/msgPayloadDefC/StripStateMsgPayload.h"
+struct StripStateMsg_C;
+
 
 %pythoncode %{
 import sys
